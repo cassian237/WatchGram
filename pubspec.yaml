@@ -1,7 +1,7 @@
 name: watchgram
 description: Telegram client for WearOS
 publish_to: 'none'
-version: '1.0.0-lynx'
+version: '1.0.1'
 
 environment:
   sdk: '>=3.5.2 <4.0.0'
