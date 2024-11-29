@@ -15,7 +15,10 @@ import 'package:watchgram/src/common/native/channel.dart';
 import 'package:watchgram/src/common/settings/entries.dart';
 import 'package:watchgram/src/common/settings/manager.dart';
 import 'package:watchgram/src/common/tdlib/providers/authorization_state/authorization_states.dart';
+import 'package:watchgram/src/pages/setup/stages/authorization/bloc.dart';
 import 'package:watchgram/src/router/router.dart';
+
+import '../../common/log/log.dart';
 
 enum NetworkState {
   waitingForNetwork,
@@ -31,6 +34,10 @@ final class _ExitSetup extends SetupEvent {
   const _ExitSetup();
 }
 
+final class SetupEventLoginTestAccount extends SetupEvent {
+  const SetupEventLoginTestAccount();
+}
+
 final class SetupEventRestart extends SetupEvent {
   const SetupEventRestart();
 }
@@ -42,6 +49,7 @@ final class SetupEventBack extends SetupEvent {
 final class SetupEventGetStarted extends SetupEvent {
   const SetupEventGetStarted();
 }
+
 
 final class SetupEventAuthorized extends SetupEvent {
   const SetupEventAuthorized();
@@ -79,6 +87,10 @@ sealed class SetupState {
 /// First screen shown to user
 final class SetupStateWelcome extends SetupState {
   const SetupStateWelcome() : super(3);
+}
+
+class SetupStateWaitingCode extends SetupState {
+  const SetupStateWaitingCode(): super(3);
 }
 
 /// Client is connecting to Telegram
@@ -212,6 +224,7 @@ class SetupBloc extends Bloc<SetupEvent, SetupState> {
   }
 
   Future<void> _connect(final Emitter<SetupState> emit) async {
+
     CurrentAccount.providers.authorizationState
         .waitForState<AuthorizationStateReady>()
         .then((_) => add(const _ExitSetup()));
@@ -222,6 +235,7 @@ class SetupBloc extends Bloc<SetupEvent, SetupState> {
       if (_compareStates(emit, state)) return;
     }
   }
+
 
   bool _compareStates(Emitter<SetupState> emit, td.ConnectionState state) {
     switch (state) {

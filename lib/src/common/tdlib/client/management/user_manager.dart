@@ -6,6 +6,7 @@
  * See /LICENSE for more details.
  */
 
+import 'package:watchgram/src/common/log/log.dart';
 import 'dart:async';
 import 'package:watchgram/src/common/tdlib/client/structures/tdlib_toolbox.dart';
 import 'package:watchgram/src/common/tdlib/client/td/parameters.dart';
@@ -75,6 +76,13 @@ class TdlibUserManager {
     await providers.detach(_box);
     await _client.close();
     await _sub?.cancel();
+
+    try {
+      await providers.authorizationState
+          .waitForState<AuthorizationStateClosed>(Duration(seconds: 5));
+    } catch (e) {
+      l.e(tag, "Failed to wait for AuthorizationStateClosed: $e");
+    }
   }
 
   static Future<TdlibUserManager> start(int databaseId) async {

@@ -13,6 +13,7 @@ import 'package:watchgram/src/pages/setup/bloc.dart';
 import 'package:watchgram/src/pages/setup/stages/authorization/bloc.dart';
 import 'package:watchgram/src/pages/setup/stages/authorization/views/password.dart';
 import 'package:watchgram/src/pages/setup/stages/authorization/views/qr.dart';
+import 'package:watchgram/src/pages/setup/stages/authorization/views/waitcode.dart';
 
 class AuthorizationView extends StatelessWidget {
   const AuthorizationView({
@@ -63,6 +64,8 @@ class AuthorizationView extends StatelessWidget {
               AuthorizationQrView(
                 qrLink: qrLink,
               ),
+            AuthorizationBlocStateWaitingCode() =>
+                AuthorizationCodeView(),
             AuthorizationBlocStateWaitingPassword(hint: final hint) =>
               AuthorizationPasswordView(hint: hint),
             AuthorizationBlocStateIncorrectPassword(hint: final hint) =>

@@ -14,10 +14,13 @@ import 'package:watchgram/src/common/native/channel.dart';
 import 'package:watchgram/src/components/list/page_indicator.dart';
 import 'package:watchgram/src/pages/setup/bloc.dart';
 import 'package:watchgram/src/pages/setup/stages/authorization/authorization.dart';
+import 'package:watchgram/src/pages/setup/stages/authorization/bloc.dart';
+import 'package:watchgram/src/pages/setup/stages/authorization/views/waitcode.dart';
 import 'package:watchgram/src/pages/setup/stages/color_scheme.dart';
 import 'package:watchgram/src/pages/setup/stages/settings.dart';
 import 'package:watchgram/src/pages/setup/stages/shape.dart';
 import 'package:watchgram/src/pages/setup/stages/welcome.dart';
+
 
 class SetupView extends StatelessWidget {
   const SetupView({super.key});
@@ -40,17 +43,25 @@ class SetupView extends StatelessWidget {
             );
           },
           child: switch (state) {
-            SetupStateWelcome() => const SetupWelcomeStageView(
+            SetupStateWelcome() => BlocProvider<AuthorizationBloc>(
+              create: (_) => AuthorizationBloc(CurrentAccount.instance.user),
+              child: const SetupWelcomeStageView(
                 key: ValueKey<String>("setup_welcome"),
               ),
-            SetupStateConnecting(state: final state) => SetupWelcomeStageView(
-                state: state,
+            ),
+            SetupStateConnecting(state: final netState) => BlocProvider<AuthorizationBloc>(
+              create: (_) => AuthorizationBloc(CurrentAccount.instance.user),
+              child: SetupWelcomeStageView(
+                state: netState,
                 key: const ValueKey<String>("setup_welcome"),
               ),
+            ),
             SetupStateAuthorizing() => AuthorizationPage(
-                user: CurrentAccount.instance.user,
-                key: const ValueKey<String>("setup_auth_root"),
-              ),
+              user: CurrentAccount.instance.user,
+              key: const ValueKey<String>("setup_auth_root"),
+            ),
+            SetupStateWaitingCode() =>
+                AuthorizationCodeView(),
             SetupStateColorScheme() ||
             SetupStateSettings() ||
             SetupStateScreenShape() =>

@@ -249,6 +249,7 @@ class TdlibRunner {
   static Future<TdlibUserManager?> fromPushPayload(String payload) async {
     // This runner should be ran from BG thread, which doesn't have any
     // HandyGram things initialized.
+    await TdlibMultiManager.instance.dispose();
     await _initThings();
 
     late final td.TdObject? pushReceiverId;
@@ -298,7 +299,7 @@ class TdlibRunner {
     try {
       await user.providers.authorizationState
           .waitForState<AuthorizationStateReady>(
-        const Duration(seconds: 2),
+        const Duration(seconds: 12),
       );
     } catch (e, st) {
       l.e(tag, "Error on TDLib initialization: $e\n$st", true);

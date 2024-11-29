@@ -21,7 +21,7 @@
     <uses-feature android:name="android.hardware.type.watch" /> <!-- To prevent users from installing the app on regular devices -->
 
     <application
-        android:label="Watchgram"
+        android:label="Watchgram for Telegram"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher">

@@ -33,6 +33,10 @@ final class AuthorizationStateReady extends AuthorizationState {
   const AuthorizationStateReady();
 }
 
+final class AuthorizationStateWaitCode extends AuthorizationState {
+  const AuthorizationStateWaitCode();
+}
+
 final class AuthorizationStateLogOut extends AuthorizationState {
   const AuthorizationStateLogOut();
 }

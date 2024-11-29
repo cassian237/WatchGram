@@ -57,6 +57,9 @@ class TdlibMultiManager {
       );
     }
 
+    final userManager = _users[clientId]!;
+    await userManager.destroy();
+
     await _users[clientId]!.destroy();
     _users.remove(clientId);
     _runningDatabases.remove(databaseId);
