@@ -32,7 +32,7 @@ class AuthorizationQrView extends StatelessWidget {
         children: [
           PageHeader(
             title: l10n.qrScanTitle,
-            topPadding: 10 * Scaling.factor,
+            topPadding: 12 * Scaling.factor,
             boxSize: 25 * Scaling.factor,
           ),
           GestureDetector(
@@ -45,8 +45,8 @@ class AuthorizationQrView extends StatelessWidget {
               child: qrLink == null
                   ? Center(
                       child: SizedBox(
-                        height: 50 * Scaling.factor,
-                        width: 50 * Scaling.factor,
+                        height: 48 * Scaling.factor,
+                        width: 48 * Scaling.factor,
                         child: const CircularProgressIndicator(),
                       ),
                     )
