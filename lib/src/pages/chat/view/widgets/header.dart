@@ -66,22 +66,22 @@ class ChatHeader extends StatelessWidget {
                   .push("/chat/send?chatId=${chat.id}&viewId=file");
             },
           ),
-          SizedBox(height: Paddings.betweenSimilarElements),
-          TileButton(
-            big: true,
-            style: TileButtonStyles.basic,
-            text: switch (chat.type) {
-              td.ChatTypeBasicGroup() => AppLocalizations.current.chatInfoGroup,
-              td.ChatTypeSupergroup(isChannel: final isChannel) => isChannel
-                  ? AppLocalizations.current.chatInfoChannel
-                  : AppLocalizations.current.chatInfoGroup,
-              // TODO: handle bots
-              _ => AppLocalizations.current.chatInfoPersonal,
-            },
-            onTap: () {
-              GoRouter.of(context).push("/chat/info?chatId=${chat.id}");
-            },
-          ),
+        //  SizedBox(height: Paddings.betweenSimilarElements),
+        //  TileButton(
+        //    big: true,
+        //    style: TileButtonStyles.basic,
+        //    text: switch (chat.type) {
+        //      td.ChatTypeBasicGroup() => AppLocalizations.current.chatInfoGroup,
+        //      td.ChatTypeSupergroup(isChannel: final isChannel) => isChannel
+        //          ? AppLocalizations.current.chatInfoChannel
+        //          : AppLocalizations.current.chatInfoGroup,
+        //      // TODO: handle bots
+        //      _ => AppLocalizations.current.chatInfoPersonal,
+        //    },
+        //    onTap: () {
+        //      GoRouter.of(context).push("/chat/info?chatId=${chat.id}");
+        //    },
+        //  ),
           SizedBox(height: Paddings.afterPage),
         ],
       ),
