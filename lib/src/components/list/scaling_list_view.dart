@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 class ScalingListView extends StatefulWidget {
-  final ScrollController? controller;
+  final ItemScrollController? controller;
+  final ItemPositionsListener? positionsListener;
   final bool reverse;
   final ScrollPhysics? physics;
   final bool shrinkWrap;
-  final EdgeInsetsGeometry? padding;
+  final EdgeInsets? padding;
   final int? itemCount;
   final IndexedWidgetBuilder itemBuilder;
   final double minScale;
@@ -14,6 +16,7 @@ class ScalingListView extends StatefulWidget {
   const ScalingListView({
     super.key,
     this.controller,
+    this.positionsListener,
     this.reverse = false,
     this.physics,
     this.shrinkWrap = false,
@@ -29,86 +32,58 @@ class ScalingListView extends StatefulWidget {
 }
 
 class _ScalingListViewState extends State<ScalingListView> {
-  late final ScrollController _effectiveController;
-  static const double _baseSpacing = 0.0;
+  final ItemScrollController _effectiveController = ItemScrollController();
+  final ItemPositionsListener _effectivePositionsListener = ItemPositionsListener.create();
 
-  @override
-  void initState() {
-    super.initState();
-    _effectiveController = widget.controller ?? ScrollController();
-  }
-
-  @override
-  void dispose() {
-    if (widget.controller == null) {
-      _effectiveController.dispose();
-    }
-    super.dispose();
-  }
-
-  double _calculateScale(double itemPosition, double itemHeight, double viewportHeight) {
-    final viewportMiddle = viewportHeight / 2;
-    final itemMiddle = itemPosition + (itemHeight / 2);
-    final distanceFromCenter = (itemMiddle - viewportMiddle).abs();
-    final maxDistance = viewportHeight / 3;
-    final distanceRatio = (distanceFromCenter / maxDistance).clamp(0.0, 1.0);
-    
-    return widget.maxScale - ((widget.maxScale - widget.minScale) * distanceRatio);
-  }
+  ItemPositionsListener get _positionsListener => 
+      widget.positionsListener ?? _effectivePositionsListener;
 
   @override
   Widget build(BuildContext context) {
-    return NotificationListener<ScrollNotification>(
-      onNotification: (notification) {
-        if (notification is ScrollUpdateNotification) {
-          setState(() {});
-        }
-        return false;
-      },
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          return ListView.builder(
-            controller: _effectiveController,
-            reverse: widget.reverse,
-            physics: widget.physics,
-            shrinkWrap: widget.shrinkWrap,
-            padding: widget.padding,
-            itemCount: widget.itemCount,
-            itemBuilder: (context, index) {
-              return Builder(
-                builder: (context) {
-                  final box = context.findRenderObject() as RenderBox?;
-                  double scale = widget.maxScale;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return ScrollablePositionedList.builder(
+          itemScrollController: widget.controller ?? _effectiveController,
+          itemPositionsListener: _positionsListener,
+          reverse: widget.reverse,
+          physics: widget.physics,
+          shrinkWrap: widget.shrinkWrap,
+          padding: widget.padding,
+          itemCount: widget.itemCount ?? 0,
+          itemBuilder: (context, index) {
+            return ValueListenableBuilder<Iterable<ItemPosition>>(
+              valueListenable: _positionsListener.itemPositions,
+              builder: (context, positions, child) {
+                double scale = widget.maxScale;
+                
+                if (positions.isNotEmpty) {
+                  final viewportHeight = constraints.maxHeight;
+                  final viewportMiddle = viewportHeight / 2;
                   
-                  if (box != null && box.hasSize) {
-                    final itemPos = box.localToGlobal(Offset.zero).dy;
-                    scale = _calculateScale(itemPos, box.size.height, constraints.maxHeight);
+                  final itemPosition = positions.where((pos) => pos.index == index).firstOrNull;
+                  if (itemPosition != null) {
+                    final itemTop = itemPosition.itemLeadingEdge * viewportHeight;
+                    final itemBottom = itemPosition.itemTrailingEdge * viewportHeight;
+                    final itemMiddle = (itemTop + itemBottom) / 2;
+                    
+                    final distanceFromCenter = (itemMiddle - viewportMiddle).abs();
+                    final maxDistance = viewportHeight / 3;
+                    final distanceRatio = (distanceFromCenter / maxDistance).clamp(0.0, 1.0);
+                    
+                    scale = widget.maxScale - ((widget.maxScale - widget.minScale) * distanceRatio);
                   }
+                }
 
-                  final scaleDiff = widget.maxScale - scale;
-                  final spacing = _baseSpacing * (1 - scaleDiff);
-                  
-                  return Container(
-                    margin: EdgeInsets.symmetric(vertical: spacing / 2),
-                    child: Transform(
-                      transform: Matrix4.identity()
-                        ..scale(scale)
-                        ..translate(
-                          0.0,
-                          widget.reverse ? 
-                            -(box?.size.height ?? 0.0) * (scale - 1.0) / 2.0 :
-                            (box?.size.height ?? 0.0) * (scale - 1.0) / 2.0,
-                        ),
-                      alignment: Alignment.center,
-                      child: widget.itemBuilder(context, index),
-                    ),
-                  );
-                },
-              );
-            },
-          );
-        },
-      ),
+                return Transform(
+                  transform: Matrix4.identity()..scale(scale),
+                  alignment: Alignment.center,
+                  child: widget.itemBuilder(context, index),
+                );
+              },
+            );
+          },
+        );
+      },
     );
   }
 }

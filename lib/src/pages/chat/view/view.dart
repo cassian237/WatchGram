@@ -7,21 +7,21 @@ import 'package:watchgram/src/common/settings/entries.dart';
 import 'package:watchgram/src/common/settings/manager.dart';
 import 'package:watchgram/src/common/tdlib/misc/service_chat_type.dart';
 import 'package:mutex/mutex.dart';
-import 'package:scrollview_observer/scrollview_observer.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 import 'package:watchgram/src/common/cubits/colors.dart';
 import 'package:watchgram/src/common/cubits/text.dart';
 import 'package:watchgram/src/common/exceptions/ui_exception.dart';
 import 'package:watchgram/src/common/log/log.dart';
 import 'package:watchgram/src/common/misc/localizations.dart';
-import 'package:watchgram/src/components/list/scrollbar.dart';
-import 'package:watchgram/src/components/list/scrollwrapper.dart';
+import 'package:watchgram/src/components/list/positioned_scrollbar.dart';
 import 'package:watchgram/src/components/overlays/notice/notice.dart';
 import 'package:watchgram/src/components/scaled_sizes.dart';
 import 'package:watchgram/src/components/list/scaling_list_view.dart';
 
 import 'package:watchgram/src/pages/chat/bloc/bloc.dart';
 import 'package:watchgram/src/pages/chat/bloc/data.dart';
+import 'package:watchgram/src/pages/chat/view/widgets/chat_scroll_observer.dart';
 import 'package:watchgram/src/pages/chat/view/widgets/focus_data.dart';
 import 'package:watchgram/src/pages/chat/view/widgets/loading_more.dart';
 import 'package:watchgram/src/pages/chat/view/widgets/message_focusable.dart';
@@ -43,22 +43,18 @@ class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
       _focusMessages,
       _msgSubcription,
       _focusRequested;
-  final _scrollController = ScrollController();
-  late final _scrollObserverController = ListObserverController(
-    controller: _scrollController,
-  )..cacheJumpIndexOffset = false;
-  late final _chatObserver = ChatScrollObserver(_scrollObserverController)
+  final _scrollController = ItemScrollController();
+  final _scrollPositionsListener = ItemPositionsListener.create();
+  late final _chatObserver = ChatScrollObserver(_scrollPositionsListener)
     ..fixedPositionOffset = 5
     ..toRebuildScrollViewCallback = () => setState(() {});
 
+  final _focusLock = Mutex();
   bool _initFinished = false;
-
+  final List<ChatBlocContainer> _containers = [];
   late ChatBloc bloc;
 
-  List<ChatBlocContainer> _containers = [];
   final _errorsQueue = StreamController<String>();
-
-  final _focusLock = Mutex();
 
   Stream<BaseNotice?> get _errors async* {
     await for (final error in _errorsQueue.stream) {
@@ -68,9 +64,19 @@ class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
     }
   }
 
-  void _focus(ChatBlocFocusData data) async {
+  Future<void> _focus(ChatBlocFocusData data) async {
     final id = data.focusOnMessageId;
     l.i(tag, "Focus requested on $id");
+
+    if (!mounted || _scrollController.isAttached == false) {
+      l.w(tag, "Scroll controller not ready for focusing");
+      if (data.mustFocusInstantly) {
+        setState(() {
+          _initFinished = true;
+        });
+      }
+      return;
+    }
 
     final index = _containers.indexWhere((e) => switch (e) {
           ChatBlocMessageId(id: final mid) => mid == id,
@@ -89,39 +95,49 @@ class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
       return;
     }
 
-    await _focusLock.protect(() async {
-      if (data.mustFocusInstantly) {
-        await _scrollObserverController.jumpTo(
+    try {
+      await _focusLock.protect(() async {
+        if (!mounted) return;
+        
+        final duration = data.mustFocusInstantly 
+            ? const Duration(milliseconds: 10)  // Slightly longer duration for instant scroll
+            : const Duration(milliseconds: 300);
+            
+        await _scrollController.scrollTo(
           index: index + 1,
+          duration: duration,
         );
+        
+        if (data.mustFocusInstantly) {
+          setState(() {
+            _initFinished = true;
+          });
+        }
+      });
+    } catch (e) {
+      l.e(tag, "Error during focus scroll: $e");
+      if (data.mustFocusInstantly) {
         setState(() {
           _initFinished = true;
         });
-      } else {
-        await _scrollObserverController.animateTo(
-          index: index + 1,
-          duration: const Duration(milliseconds: 300),
-          alignment: 0,
-          curve: Curves.easeInOut,
-        );
       }
-    });
+    }
   }
 
-  void _onBlocUpdate(final ChatBlocStreamedData update) {
-    if (!mounted) {
-      return _dispose();
-    }
+  void _onBlocUpdate(final ChatBlocStreamedData update) async {
+    if (!mounted) return;
 
     switch (update) {
       case ChatBlocMessageContentUpdated():
+        // Message content updated, no need to handle for scaling list
         break;
+        
       case ChatBlocMessagesListData(
-          containers: final containers,
-          focusData: final focusData,
-          whatsChanged: final change,
-        ):
-        int delta = change?.delta ?? containers.length;
+        containers: final containers,
+        focusData: final focusData,
+        whatsChanged: final change,
+      ):
+        final delta = change?.delta ?? containers.length;
 
         if (!(change?.preservationUnneeded ?? false)) {
           _chatObserver.standby(
@@ -133,7 +149,8 @@ class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
         }
 
         setState(() {
-          _containers = containers;
+          _containers.clear();
+          _containers.addAll(containers);
         });
 
         if (focusData != null) {
@@ -146,11 +163,11 @@ class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
 
   void _dispose() async {
     WidgetsBinding.instance.removeObserver(this);
-    await _focusMessages?.cancel();
     await _focusNewMessages?.cancel();
+    await _focusMessages?.cancel();
+    await _focusRequested?.cancel();
     await _msgSubcription?.cancel();
     bloc.dispose();
-    _scrollController.dispose();
   }
 
   @override
@@ -203,10 +220,9 @@ class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
     final listView = ScalingListView(
       key: const ValueKey<String>("chat-screen-lvw"),
       controller: _scrollController,
+      positionsListener: _scrollPositionsListener,
       reverse: true,
-      physics: ChatObserverClampingScrollPhysics(
-        observer: _chatObserver,
-      ),
+      physics: const AlwaysScrollableScrollPhysics(),
       shrinkWrap: _chatObserver.isShrinkWrap,
       itemCount: _containers.length + 1,
       minScale: 0.7,
@@ -260,25 +276,21 @@ class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          HandyScrollbar(
-            controller: _scrollController,
-            child: HandyScrollWrapper(
-              controller: _scrollController,
-              child: ListViewObserver(
-                controller: _scrollObserverController,
-                child: listView,
-              ),
-            ),
+          PositionedScrollbar(
+            positionsListener: _scrollPositionsListener,
+            itemCount: _containers.length + 1,
+            child: listView,
           ),
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 300),
             switchInCurve: Easing.standardDecelerate,
             switchOutCurve: Easing.standardDecelerate,
             child: _initFinished
-                ? const IgnorePointer(
-                    key: ValueKey<String>("chat_ip"),
-                  )
-                : _spinner,
+                ? const SizedBox()
+                : Container(
+                    color: Colors.black.withOpacity(0.5),
+                    child: _spinner,
+                  ),
           ),
         ],
       ),
@@ -303,37 +315,41 @@ class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final bloc = context.watch<ChatBloc>();
-    return switch (bloc.state) {
-      ChatBlocLoadingState() => Scaffold(
-          body: _spinner,
-        ),
-      ChatBlocError(error: final errorData) => Scaffold(
-          backgroundColor: ColorStyles.active.error,
-          body: Center(
-            child: Padding(
-                padding:
-                    EdgeInsets.all(Paddings.afterPageEndingWithSmallButton),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.error, color: ColorStyles.active.onError),
-                    Text(
-                      errorData,
-                      style: TextStyles.active.titleLarge?.copyWith(
-                        color: ColorStyles.active.onError,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                )),
-          ),
-        ),
-      ChatBlocReady(dataStream: final stream, chatType: final type) =>
-        NoticeOverlay(
-          noticeUpdates: _errors,
-          child: _build(context, stream, type),
-        ),
-    };
+    return BlocBuilder<ChatBloc, ChatBlocState>(
+      builder: (context, state) {
+        final bloc = context.watch<ChatBloc>();
+        return switch (state) {
+          ChatBlocLoadingState() => Scaffold(
+              body: _spinner,
+            ),
+          ChatBlocError(error: final errorData) => Scaffold(
+              backgroundColor: ColorStyles.active.error,
+              body: Center(
+                child: Padding(
+                    padding:
+                        EdgeInsets.all(Paddings.afterPageEndingWithSmallButton),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.error, color: ColorStyles.active.onError),
+                        Text(
+                          errorData,
+                          style: TextStyles.active.titleLarge?.copyWith(
+                            color: ColorStyles.active.onError,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    )),
+              ),
+            ),
+          ChatBlocReady(dataStream: final stream, chatType: final type) =>
+            NoticeOverlay(
+              noticeUpdates: _errors,
+              child: _build(context, stream, type),
+            ),
+        };
+      },
+    );
   }
 }
