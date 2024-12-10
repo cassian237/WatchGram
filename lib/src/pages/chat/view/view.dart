@@ -18,6 +18,7 @@ import 'package:watchgram/src/components/list/scrollbar.dart';
 import 'package:watchgram/src/components/list/scrollwrapper.dart';
 import 'package:watchgram/src/components/overlays/notice/notice.dart';
 import 'package:watchgram/src/components/scaled_sizes.dart';
+import 'package:watchgram/src/components/list/scaling_list_view.dart';
 
 import 'package:watchgram/src/pages/chat/bloc/bloc.dart';
 import 'package:watchgram/src/pages/chat/bloc/data.dart';
@@ -199,35 +200,20 @@ class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
   ) {
     _msgSubcription ??= stream.listen(_onBlocUpdate);
 
-    final listView = ListView.builder(
+    final listView = ScalingListView(
       key: const ValueKey<String>("chat-screen-lvw"),
       controller: _scrollController,
       reverse: true,
       physics: ChatObserverClampingScrollPhysics(
         observer: _chatObserver,
       ),
-      hitTestBehavior: HitTestBehavior.translucent,
       shrinkWrap: _chatObserver.isShrinkWrap,
       itemCount: _containers.length + 1,
-      // We have max of 32-34 messages in buffer before cleanup happens
-      // message height = 20 - double.infinity% of screen height
-      //
-      // In real usage, average message height (outgoing, with reply block and
-      // with line breaks) is 80-90% of screen height in chats
-      //
-      // In channels the average message height is virtually really huge (cause
-      // we expect to see posts with long texts in channels), but in reality
-      // it is 200-300% of screen height.
-      //
-      // With this info given, we calculate the cache extent with this logic:
-      // messageHeightK = (isChannel ? 3 : 0.8) * screenHeight
-      // cacheExtent = messageHeightK * 34
-      //
-      // We cannot just make double.infinity cacheExtent cause we'll see 0 FPS
-      // on potatoish WearOS devices CPUs
-      cacheExtent: Settings().get(SettingsEntries.useInfiniteCacheExtent)
-          ? double.infinity
-          : (bloc.chat.isChannel ? 3 : 0.8) * Scaling.screenSize.height * 34,
+      minScale: 0.7,
+      maxScale: 1.0,
+      padding: EdgeInsets.symmetric(
+        horizontal: Paddings.messageBubblesPadding,
+      ),
       itemBuilder: (context, i) {
         final bloc = context.read<ChatBloc>();
 
@@ -239,6 +225,10 @@ class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
         }
 
         i -= 1;
+        if (i >= _containers.length) {
+          return const SizedBox.shrink(); // Safety check
+        }
+        
         final container = _containers[i];
 
         return switch (container) {
@@ -274,14 +264,9 @@ class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
             controller: _scrollController,
             child: HandyScrollWrapper(
               controller: _scrollController,
-              child: Padding(
-                padding: EdgeInsets.symmetric(
-                  horizontal: Paddings.messageBubblesPadding,
-                ),
-                child: ListViewObserver(
-                  controller: _scrollObserverController,
-                  child: listView,
-                ),
+              child: ListViewObserver(
+                controller: _scrollObserverController,
+                child: listView,
               ),
             ),
           ),
