@@ -1,354 +1,205 @@
 import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:watchgram/src/common/cubits/scaling.dart';
-import 'package:watchgram/src/common/settings/entries.dart';
-import 'package:watchgram/src/common/settings/manager.dart';
-import 'package:watchgram/src/common/tdlib/misc/service_chat_type.dart';
-import 'package:mutex/mutex.dart';
-import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
-
-import 'package:watchgram/src/common/cubits/colors.dart';
-import 'package:watchgram/src/common/cubits/text.dart';
-import 'package:watchgram/src/common/exceptions/ui_exception.dart';
-import 'package:watchgram/src/common/log/log.dart';
-import 'package:watchgram/src/common/misc/localizations.dart';
-import 'package:watchgram/src/components/list/positioned_scrollbar.dart';
-import 'package:watchgram/src/components/overlays/notice/notice.dart';
-import 'package:watchgram/src/components/scaled_sizes.dart';
 import 'package:watchgram/src/components/list/scaling_list_view.dart';
-
+import 'package:watchgram/src/components/overlays/notice/notice.dart';
 import 'package:watchgram/src/pages/chat/bloc/bloc.dart';
 import 'package:watchgram/src/pages/chat/bloc/data.dart';
-import 'package:watchgram/src/pages/chat/view/widgets/chat_scroll_observer.dart';
-import 'package:watchgram/src/pages/chat/view/widgets/focus_data.dart';
-import 'package:watchgram/src/pages/chat/view/widgets/loading_more.dart';
+import 'package:watchgram/src/common/tdlib/misc/service_chat_type.dart';
 import 'package:watchgram/src/pages/chat/view/widgets/message_focusable.dart';
-import 'package:watchgram/src/pages/chat/view/widgets/header.dart';
-
-import 'package:watchgram/src/common/tdlib/extensions/chats/misc.dart';
+import 'package:handy_tdlib/api.dart' as td;
 
 class ChatView extends StatefulWidget {
-  const ChatView({super.key});
+  const ChatView({
+    super.key,
+    required this.chatId,
+  });
+
+  final int chatId;
 
   @override
   State<ChatView> createState() => _ChatViewState();
 }
 
-class _ChatViewState extends State<ChatView> with WidgetsBindingObserver {
-  static const String tag = "ChatView";
-
-  StreamSubscription? _focusNewMessages,
-      _focusMessages,
-      _msgSubcription,
-      _focusRequested;
-  final _scrollController = ItemScrollController();
-  final _scrollPositionsListener = ItemPositionsListener.create();
-  late final _chatObserver = ChatScrollObserver(_scrollPositionsListener)
-    ..fixedPositionOffset = 5
-    ..toRebuildScrollViewCallback = () => setState(() {});
-
-  final _focusLock = Mutex();
-  bool _initFinished = false;
-  final List<ChatBlocContainer> _containers = [];
+class _ChatViewState extends State<ChatView> {
   late ChatBloc bloc;
+  StreamSubscription<ChatBlocStreamedData>? _msgSubcription;
+  List<ChatBlocContainer> _containers = [];
+  bool _initFinished = false;
+  final _errors = StreamController<String>.broadcast();
 
-  final _errorsQueue = StreamController<String>();
+  String _formatMessage(td.Message message) {
+    final sender = switch (message.senderId) {
+      td.MessageSenderChat(chatId: final chatId) => 'Chat $chatId',
+      td.MessageSenderUser(userId: final userId) => 'User $userId',
+    };
+    
+    final time = DateTime.fromMillisecondsSinceEpoch(message.date * 1000)
+        .toLocal()
+        .toString()
+        .substring(11, 16);
 
-  Stream<BaseNotice?> get _errors async* {
-    await for (final error in _errorsQueue.stream) {
-      yield StringNotice(error, color: ColorStyles.active.onError);
-      await Future.delayed(const Duration(seconds: 5));
-      yield null;
-    }
-  }
+    final content = switch (message.content) {
+      td.MessageText(text: td.FormattedText(text: final text)) => text,
+      td.MessagePhoto(caption: td.FormattedText(text: final text)) => text,
+      td.MessageVoiceNote(caption: td.FormattedText(text: final text)) => text,
+      td.MessageAnimation(caption: td.FormattedText(text: final text)) => text,
+      td.MessageAnimatedEmoji(emoji: final emoji) => emoji,
+      _ => 'Unsupported message type',
+    };
 
-  Future<void> _focus(ChatBlocFocusData data) async {
-    final id = data.focusOnMessageId;
-    l.i(tag, "Focus requested on $id");
-
-    if (!mounted || _scrollController.isAttached == false) {
-      l.w(tag, "Scroll controller not ready for focusing");
-      if (data.mustFocusInstantly) {
-        setState(() {
-          _initFinished = true;
-        });
-      }
-      return;
-    }
-
-    final index = _containers.indexWhere((e) => switch (e) {
-          ChatBlocMessageId(id: final mid) => mid == id,
-          _ => false,
-        });
-    if (index == -1) {
-      l.e(tag, "Couldn't find message id $id");
-      _errorsQueue.add(
-        AppLocalizations.current.chatViewMessageNotFoundError(id),
-      );
-      if (data.mustFocusInstantly) {
-        setState(() {
-          _initFinished = true;
-        });
-      }
-      return;
-    }
-
-    try {
-      await _focusLock.protect(() async {
-        if (!mounted) return;
-        
-        final duration = data.mustFocusInstantly 
-            ? const Duration(milliseconds: 10)  // Slightly longer duration for instant scroll
-            : const Duration(milliseconds: 300);
-            
-        await _scrollController.scrollTo(
-          index: index + 1,
-          duration: duration,
-        );
-        
-        if (data.mustFocusInstantly) {
-          setState(() {
-            _initFinished = true;
-          });
-        }
-      });
-    } catch (e) {
-      l.e(tag, "Error during focus scroll: $e");
-      if (data.mustFocusInstantly) {
-        setState(() {
-          _initFinished = true;
-        });
-      }
-    }
-  }
-
-  void _onBlocUpdate(final ChatBlocStreamedData update) async {
-    if (!mounted) return;
-
-    switch (update) {
-      case ChatBlocMessageContentUpdated():
-        // Message content updated, no need to handle for scaling list
-        break;
-        
-      case ChatBlocMessagesListData(
-        containers: final containers,
-        focusData: final focusData,
-        whatsChanged: final change,
-      ):
-        final delta = change?.delta ?? containers.length;
-
-        if (!(change?.preservationUnneeded ?? false)) {
-          _chatObserver.standby(
-            changeCount: delta.abs(),
-            isRemove: delta.isNegative,
-            refItemIndex: (change?.refIndexBefore ?? 0) + 1,
-            refItemIndexAfterUpdate: (change?.refIndexAfter ?? 0) + 1,
-          );
-        }
-
-        setState(() {
-          _containers.clear();
-          _containers.addAll(containers);
-        });
-
-        if (focusData != null) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            _focus(focusData);
-          });
-        }
-    }
-  }
-
-  void _dispose() async {
-    WidgetsBinding.instance.removeObserver(this);
-    await _focusNewMessages?.cancel();
-    await _focusMessages?.cancel();
-    await _focusRequested?.cancel();
-    await _msgSubcription?.cancel();
-    bloc.dispose();
-  }
-
-  @override
-  void didChangeMetrics() {
-    super.didChangeMetrics();
-    _chatObserver.observeSwitchShrinkWrap();
-  }
-
-  @override
-  void dispose() {
-    _dispose();
-    super.dispose();
-  }
-
-  @override
-  void didChangeDependencies() {
-    final focus = MessageFocusData.of(context)!;
-    _focusNewMessages ??= focus.newFocusedMessages.listen((id) {
-      if (!mounted) return;
-      context.read<ChatBloc>().add(ChatBlocNewFocusedMessageEvent(id));
-    });
-    _focusMessages ??= focus.focusedMessages.listen((ids) {
-      if (!mounted) return;
-      context.read<ChatBloc>().add(ChatBlocCurrentlyFocusedMessagesEvent(ids));
-    });
-    _focusRequested ??= focus.focusRequestedMessages.listen((id) {
-      if (!mounted) return;
-      context.read<ChatBloc>().add(ChatBlocLoadChunkEvent(id));
-    });
-    bloc = context.read<ChatBloc>();
-    super.didChangeDependencies();
+    return '$sender [$time]\n$content';
   }
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback(
-      (_) => context.read<ChatBloc>().add(const ChatBlocReadyToShowEvent()),
+    debugPrint('ChatView: Initializing with chatId ${widget.chatId}');
+    bloc = ChatBloc();
+    _msgSubcription = bloc.dataStream.listen(
+      _onBlocUpdate,
+      onError: (error) => debugPrint('ChatView: Error from stream: $error'),
+      onDone: () => debugPrint('ChatView: Stream closed'),
     );
+    bloc.add(ChatBlocStartPreloadingEvent(chatId: widget.chatId));
+    
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted) {
+        debugPrint('ChatView: Sending ready to show event');
+        bloc.add(const ChatBlocReadyToShowEvent());
+      }
+    });
   }
 
-  Widget _build(
-    BuildContext context,
-    Stream<ChatBlocStreamedData> stream,
-    ServiceChatType? type,
-  ) {
-    _msgSubcription ??= stream.listen(_onBlocUpdate);
-
-    final listView = ScalingListView(
-      key: const ValueKey<String>("chat-screen-lvw"),
-      controller: _scrollController,
-      positionsListener: _scrollPositionsListener,
-      reverse: true,
-      physics: const AlwaysScrollableScrollPhysics(),
-      shrinkWrap: _chatObserver.isShrinkWrap,
-      itemCount: _containers.length + 1,
-      minScale: 0.7,
-      maxScale: 1.0,
-      padding: EdgeInsets.symmetric(
-        horizontal: Paddings.messageBubblesPadding,
-      ),
-      itemBuilder: (context, i) {
-        final bloc = context.read<ChatBloc>();
-
-        if (i == 0) {
-          return ChatHeader(
-            key: const GlobalObjectKey("chathdr"),
-            chat: bloc.chat,
-          );
-        }
-
-        i -= 1;
-        if (i >= _containers.length) {
-          return const SizedBox.shrink(); // Safety check
-        }
-        
-        final container = _containers[i];
-
-        return switch (container) {
-          ChatBlocMessageId(id: final id) => Padding(
-              padding: EdgeInsets.only(
-                bottom: Paddings.betweenSimilarElements,
-              ),
-              key: GlobalObjectKey("msg-$id"),
-              child: FocusableMessageBubble(
-                chat: bloc.chat,
-                type: type,
-                message: bloc.messagesData[id] ??
-                    (throw HandyUiException(tag, "No such message $id")),
-              ),
-            ),
-          ChatBlocNoMoreMessages(older: final older) => SizedBox(
-              key: GlobalObjectKey("nomoremessages-$older"),
-            ),
-          ChatBlocLoadMore(fromMessageId: final id, older: final older) =>
-            LoadMoreWidget(
-              data: container,
-              key: GlobalObjectKey("loadmore-from-$id-$older"),
-            ),
-        };
-      },
-    );
-
-    return Scaffold(
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          PositionedScrollbar(
-            positionsListener: _scrollPositionsListener,
-            itemCount: _containers.length + 1,
-            child: listView,
-          ),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 300),
-            switchInCurve: Easing.standardDecelerate,
-            switchOutCurve: Easing.standardDecelerate,
-            child: _initFinished
-                ? const SizedBox()
-                : Container(
-                    color: Colors.black.withOpacity(0.5),
-                    child: _spinner,
-                  ),
-          ),
-        ],
-      ),
-    );
+  @override
+  void dispose() {
+    debugPrint('ChatView: Disposing');
+    _msgSubcription?.cancel();
+    _errors.close();
+    bloc.close();
+    super.dispose();
   }
 
-  final _spinner = SizedBox.expand(
-      child: Container(
-    color: Colors.black,
-    child: const Center(
-      child: SizedBox(
-        height: 50,
-        width: 50,
-        child: CircularProgressIndicator(
-          key: ValueKey<String>(
-            "pro_fortnait_babaji_caesgo_cybersport_120fps_4k_ultra_hd_spinner",
-          ),
-        ),
-      ),
-    ),
-  ));
+  void _onBlocUpdate(ChatBlocStreamedData update) {
+    debugPrint('ChatView: Received update ${update.runtimeType}');
+    if (!mounted) return;
+
+    switch (update) {
+      case ChatBlocMessagesListData(
+        containers: final containers,
+        whatsChanged: final change
+      ):
+        debugPrint('ChatView: Received ${containers.length} containers');
+        debugPrint('ChatView: Container types: ${containers.map((c) => '${c.runtimeType}').join(', ')}');
+        if (change != null) {
+          debugPrint('ChatView: Change - refBefore: ${change.refIndexBefore}, refAfter: ${change.refIndexAfter}, delta: ${change.delta}');
+        }
+
+        // Vérifier les conteneurs LoadMore
+        final loadMoreContainers = containers.whereType<ChatBlocLoadMore>().toList();
+        debugPrint('ChatView: Found ${loadMoreContainers.length} LoadMore containers:');
+        for (final container in loadMoreContainers) {
+          debugPrint('ChatView: - fromMessageId: ${container.fromMessageId}, older: ${container.older}');
+        }
+
+        // Vérifier les conteneurs de messages
+        final messageContainers = containers.whereType<ChatBlocMessageId>().toList();
+        debugPrint('ChatView: Found ${messageContainers.length} message containers:');
+        debugPrint('ChatView: Message IDs: ${messageContainers.map((c) => (c as ChatBlocMessageId).id).join(", ")}');
+
+        setState(() {
+          _containers = List<ChatBlocContainer>.from(containers);
+          _initFinished = true;
+        });
+
+      case ChatBlocError(error: final error):
+        debugPrint('ChatView: Received error: $error');
+        _errors.add(error);
+
+      case ChatBlocMessageContentUpdated():
+        debugPrint('ChatView: Message content updated');
+        setState(() {});
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return BlocBuilder<ChatBloc, ChatBlocState>(
+      bloc: bloc,
       builder: (context, state) {
-        final bloc = context.watch<ChatBloc>();
-        return switch (state) {
-          ChatBlocLoadingState() => Scaffold(
-              body: _spinner,
-            ),
-          ChatBlocError(error: final errorData) => Scaffold(
-              backgroundColor: ColorStyles.active.error,
-              body: Center(
-                child: Padding(
-                    padding:
-                        EdgeInsets.all(Paddings.afterPageEndingWithSmallButton),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.error, color: ColorStyles.active.onError),
-                        Text(
-                          errorData,
-                          style: TextStyles.active.titleLarge?.copyWith(
-                            color: ColorStyles.active.onError,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    )),
-              ),
-            ),
-          ChatBlocReady(dataStream: final stream, chatType: final type) =>
-            NoticeOverlay(
-              noticeUpdates: _errors,
-              child: _build(context, stream, type),
-            ),
-        };
+        debugPrint('ChatView: Building with state ${state.runtimeType}');
+        
+        if (state is ChatBlocLoadingState) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        if (state is ChatBlocReady) {
+          debugPrint('ChatView: Building chat view');
+          final messages = bloc.messagesData.keys.toList()
+            ..sort((a, b) => a.compareTo(b));  // Trier du plus ancien au plus récent
+
+          debugPrint('ChatView: Found ${messages.length} messages');
+          debugPrint('ChatView: Message IDs: ${messages.join(", ")}');
+          
+          final formattedMessages = messages.map((id) {
+            final message = bloc.messagesData[id];
+            if (message == null) {
+              debugPrint('ChatView: Message $id not found in messagesData');
+              return null;
+            }
+            return {
+              'id': id.toString(),
+              'text': _formatMessage(message),
+              'isOutgoing': message.isOutgoing,
+              'timestamp': message.date,
+            };
+          }).whereType<Map<String, dynamic>>().toList();
+
+          debugPrint('ChatView: Formatted ${formattedMessages.length} messages');
+          debugPrint('ChatView: First message: ${formattedMessages.firstOrNull}');
+          debugPrint('ChatView: Last message: ${formattedMessages.lastOrNull}');
+          debugPrint('ChatView: Current containers: ${_containers.length}');
+          debugPrint('ChatView: Container types: ${_containers.map((c) => '${c.runtimeType}').join(', ')}');
+
+          // Vérifier si nous avons un container LoadMore pour les messages plus récents
+          bool hasMore = _containers.any((container) => 
+            container is ChatBlocLoadMore && !container.older
+          );
+          debugPrint('ChatView: Has more recent messages: $hasMore');
+
+          // Vérifier que les conteneurs correspondent aux messages
+          final messageContainers = _containers.whereType<ChatBlocMessageId>().toList();
+          debugPrint('ChatView: Message containers: ${messageContainers.length}');
+          debugPrint('ChatView: Message container IDs: ${messageContainers.map((c) => (c as ChatBlocMessageId).id).join(", ")}');
+
+          return ScalingListView(
+            messages: formattedMessages,
+            hasMore: hasMore,
+            onLoadMore: () async {
+              debugPrint('ChatView: Load more triggered');
+              if (_containers.isEmpty) {
+                debugPrint('ChatView: No containers available');
+                return;
+              }
+
+              // Chercher uniquement les conteneurs LoadMore pour les messages plus récents
+              final loadMoreContainers = _containers.whereType<ChatBlocLoadMore>()
+                .where((container) => !container.older)
+                .toList();
+              
+              if (loadMoreContainers.isEmpty) {
+                debugPrint('ChatView: No LoadMore containers for recent messages');
+                return;
+              }
+
+              final loadMoreContainer = loadMoreContainers.first;
+              debugPrint('ChatView: Found ChatBlocLoadMore: fromMessageId=${loadMoreContainer.fromMessageId}, older=${loadMoreContainer.older}');
+              bloc.add(ChatBlocLoadMoreEvent(loadMoreContainer));
+            },
+          );
+        }
+
+        return const Center(child: Text('Error loading chat'));
       },
     );
   }

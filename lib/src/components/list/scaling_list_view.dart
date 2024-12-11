@@ -1,89 +1,95 @@
 import 'package:flutter/material.dart';
-import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+import 'package:flutter/services.dart';
 
 class ScalingListView extends StatefulWidget {
-  final ItemScrollController? controller;
-  final ItemPositionsListener? positionsListener;
-  final bool reverse;
-  final ScrollPhysics? physics;
-  final bool shrinkWrap;
-  final EdgeInsets? padding;
-  final int? itemCount;
-  final IndexedWidgetBuilder itemBuilder;
-  final double minScale;
-  final double maxScale;
-
   const ScalingListView({
     super.key,
-    this.controller,
-    this.positionsListener,
-    this.reverse = false,
-    this.physics,
-    this.shrinkWrap = false,
-    this.padding,
-    this.itemCount,
-    required this.itemBuilder,
-    this.minScale = 0.8,
-    this.maxScale = 1.0,
+    required this.messages,
+    required this.hasMore,
+    this.onLoadMore,
   });
+
+  final List<Map<String, dynamic>> messages;
+  final bool hasMore;
+  final Future<void> Function()? onLoadMore;
 
   @override
   State<ScalingListView> createState() => _ScalingListViewState();
 }
 
 class _ScalingListViewState extends State<ScalingListView> {
-  final ItemScrollController _effectiveController = ItemScrollController();
-  final ItemPositionsListener _effectivePositionsListener = ItemPositionsListener.create();
+  MethodChannel? _viewChannel;
+  bool _initialized = false;
 
-  ItemPositionsListener get _positionsListener => 
-      widget.positionsListener ?? _effectivePositionsListener;
+  Future<void> _updateNativeView() async {
+    try {
+      if (!_initialized || _viewChannel == null) {
+        debugPrint('ScalingListView: View not initialized yet, skipping update');
+        return;
+      }
+
+      debugPrint('ScalingListView: Updating native view with ${widget.messages.length} messages, hasMore: ${widget.hasMore}');
+      debugPrint('ScalingListView: First message: ${widget.messages.firstOrNull}');
+      debugPrint('ScalingListView: Last message: ${widget.messages.lastOrNull}');
+      
+      await _viewChannel!.invokeMethod('updateMessages', {
+        'messages': widget.messages,
+        'hasMore': widget.hasMore,
+      });
+      debugPrint('ScalingListView: Native view updated successfully');
+    } catch (e, stackTrace) {
+      debugPrint('ScalingListView: Error updating native view: $e');
+      debugPrint('ScalingListView: Stack trace: $stackTrace');
+    }
+  }
+
+  Future<void> _handleMethodCall(MethodCall call) async {
+    switch (call.method) {
+      case 'onLoadMore':
+        debugPrint('ScalingListView: Load more requested from native side');
+        if (widget.onLoadMore != null) {
+          try {
+            await widget.onLoadMore!();
+            debugPrint('ScalingListView: Load more completed successfully');
+          } catch (e) {
+            debugPrint('ScalingListView: Error in load more: $e');
+          }
+        } else {
+          debugPrint('ScalingListView: No onLoadMore callback provided');
+        }
+        break;
+    }
+  }
+
+  @override
+  void didUpdateWidget(ScalingListView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.messages != widget.messages || oldWidget.hasMore != widget.hasMore) {
+      debugPrint('ScalingListView: Messages or hasMore changed, updating native view');
+      _updateNativeView();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return ScrollablePositionedList.builder(
-          itemScrollController: widget.controller ?? _effectiveController,
-          itemPositionsListener: _positionsListener,
-          reverse: widget.reverse,
-          physics: widget.physics,
-          shrinkWrap: widget.shrinkWrap,
-          padding: widget.padding,
-          itemCount: widget.itemCount ?? 0,
-          itemBuilder: (context, index) {
-            return ValueListenableBuilder<Iterable<ItemPosition>>(
-              valueListenable: _positionsListener.itemPositions,
-              builder: (context, positions, child) {
-                double scale = widget.maxScale;
-                
-                if (positions.isNotEmpty) {
-                  final viewportHeight = constraints.maxHeight;
-                  final viewportMiddle = viewportHeight / 2;
-                  
-                  final itemPosition = positions.where((pos) => pos.index == index).firstOrNull;
-                  if (itemPosition != null) {
-                    final itemTop = itemPosition.itemLeadingEdge * viewportHeight;
-                    final itemBottom = itemPosition.itemTrailingEdge * viewportHeight;
-                    final itemMiddle = (itemTop + itemBottom) / 2;
-                    
-                    final distanceFromCenter = (itemMiddle - viewportMiddle).abs();
-                    final maxDistance = viewportHeight / 3;
-                    final distanceRatio = (distanceFromCenter / maxDistance).clamp(0.0, 1.0);
-                    
-                    scale = widget.maxScale - ((widget.maxScale - widget.minScale) * distanceRatio);
-                  }
-                }
-
-                return Transform(
-                  transform: Matrix4.identity()..scale(scale),
-                  alignment: Alignment.center,
-                  child: widget.itemBuilder(context, index),
-                );
-              },
-            );
-          },
-        );
-      },
+    debugPrint('ScalingListView: Building view');
+    
+    return SizedBox.expand(
+      child: AndroidView(
+        viewType: 'chat_list_view',
+        onPlatformViewCreated: (id) {
+          debugPrint('ScalingListView: Platform view created with id $id');
+          _viewChannel = MethodChannel('chat_list_view_$id');
+          _viewChannel!.setMethodCallHandler(_handleMethodCall);
+          _initialized = true;
+          _updateNativeView();
+        },
+        creationParams: <String, dynamic>{
+          'messages': widget.messages,
+          'hasMore': widget.hasMore,
+        },
+        creationParamsCodec: const StandardMessageCodec(),
+      ),
     );
   }
 }

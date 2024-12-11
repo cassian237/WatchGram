@@ -9,6 +9,7 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:handy_tdlib/handy_tdlib.dart';
 import 'package:watchgram/src/common/cubits/current_account.dart';
@@ -50,6 +51,7 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
 
   Map<int, td.Message> get messagesData => _messagesData;
   td.Chat get chat => _chat;
+  Stream<ChatBlocStreamedData> get dataStream => _streamController.stream;
 
   @override
   void onError(Object error, StackTrace stackTrace) {
@@ -77,10 +79,10 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
 
   Future<void> _exceptionsGuard(
     Emitter<ChatBlocState> emit,
-    Future<void> value,
+    Future<void> Function() action,
   ) async {
     try {
-      await value;
+      await action();
     } catch (error) {
       emit(ChatBlocError(
           AppLocalizations.current.chatBlocLoadingError(switch (error) {
@@ -98,17 +100,22 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
   Future<void> _preload(
     ChatBlocStartPreloadingEvent event,
     Emitter<ChatBlocState> emit,
-  ) async =>
-      _exceptionsGuard(emit, _lock.protect(() async {
-        // Load chat info
+  ) async {
+    l.d(tag, "Starting preload for chat ${event.chatId}");
+    await _exceptionsGuard(
+      emit,
+      () async {
         _chat = await CurrentAccount.providers.chats.getChat(event.chatId);
-        _chatInfoUpdateSub =
-            CurrentAccount.providers.chats.filter(event.chatId, tdUpdateTypes: [
-          td.UpdateChatReadInbox,
-          td.UpdateChatReadOutbox,
-          td.UpdateChatLastMessage,
-        ]).listen((final upd) {
-          switch (upd.update) {
+        l.d(tag, "Chat loaded: ${_chat.id}");
+
+        _chatInfoUpdateSub = CurrentAccount.providers.chats
+            .filter(_chat.id, tdUpdateTypes: [
+              td.UpdateChatReadInbox,
+              td.UpdateChatReadOutbox,
+              td.UpdateChatLastMessage,
+            ]).listen((event) {
+          l.d(tag, "Received chat update: ${event.runtimeType}");
+          switch (event.update) {
             case td.UpdateChatReadInbox(
                 lastReadInboxMessageId: final lastReadInboxMessageId,
                 unreadCount: final unreadCount,
@@ -130,76 +137,80 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
           }
         });
 
-        final serviceChatType = await getServiceChatType(_chat);
-        int fromMessageId =
-            event.focusOnMessageId ?? _chat.lastReadInboxMessageId;
-        int focusOnMessageId = fromMessageId;
-        if (serviceChatType == ServiceChatType.savedMessages) {
-          fromMessageId = _chat.lastMessage!.id;
-        }
-
-        // Load chunk of latest read messages
-        final messages = await CurrentAccount.providers.messages.getHistory(
-          _chat.id,
-          fromMessageId: fromMessageId,
-          offset: -5,
-          limit: 11,
-        );
-
-        if (serviceChatType == ServiceChatType.savedMessages) {
-          focusOnMessageId = messages.first.id;
-        }
-
-        // Construct initial containers list
-        if (messages.first.id == _chat.lastMessage?.id) {
-          _containers.add(const ChatBlocNoMoreMessages(older: false));
-        } else {
-          _containers.add(ChatBlocLoadMore(
-            fromMessageId: messages.first.id,
-            older: false,
-          ));
-        }
-        _containers.addAll(messages.map((m) => ChatBlocMessageId(m.id)));
-        if (messages.length != 11 &&
-            _containers.first is! ChatBlocNoMoreMessages) {
-          _containers.add(const ChatBlocNoMoreMessages(older: true));
-        } else {
-          _containers.add(ChatBlocLoadMore(
-            fromMessageId: messages.last.id,
-            older: true,
-          ));
-        }
-
-        for (final message in messages) {
-          messagesData[message.id] = message;
-        }
-        _streamController.add(ChatBlocMessagesListData(
-          _containers,
-          focusData: ChatBlocFocusData(
-            focusOnMessageId: focusOnMessageId,
-            mustFocusInstantly: true,
-          ),
-        ));
-
-        _messageUpdatesSub = CurrentAccount.providers.messages.filter(
-          _chat.id,
-          tdUpdateTypes: [
-            td.UpdateMessageContent,
-            td.UpdateMessageContentOpened,
-            td.UpdateMessageEdited,
-            td.UpdateMessageInteractionInfo,
-            td.UpdateMessageSendSucceeded,
-            td.UpdateMessageSendFailed,
-            td.UpdateDeleteMessages,
-            td.UpdateNewMessage,
-          ],
-        ).listen(_onMessagesUpdate);
+        await _loadInitialMessages(emit);
+        l.d(tag, "Initial messages loaded");
 
         await _uiReady?.future;
-        await CurrentAccount.providers.chats.openChat(_chat.id);
+        l.d(tag, "UI is ready");
 
+        final serviceChatType = await getServiceChatType(_chat);
         emit(ChatBlocReady(_streamController.stream, serviceChatType));
-      }));
+        l.d(tag, "Emitted ChatBlocReady state");
+        return;
+      },
+    );
+  }
+
+  Future<void> _loadInitialMessages(Emitter<ChatBlocState> emit) async {
+    l.d(tag, "Loading initial messages");
+    final messages = await CurrentAccount.providers.messages.getHistory(
+      _chat.id,
+      fromMessageId: _chat.lastReadInboxMessageId,
+      limit: 20,
+    );
+    l.d(tag, "Received ${messages.length} initial messages");
+
+    if (messages.isEmpty) {
+      l.d(tag, "No messages found, adding NoMoreMessages container");
+      _containers.add(const ChatBlocNoMoreMessages(older: true));
+      _notifyContainersChanged();
+      return;
+    }
+
+    // Ajouter d'abord le LoadMore pour les messages plus anciens si nécessaire
+    if (messages.length >= 20) {
+      l.d(tag, "Adding LoadMore container for older messages");
+      _containers.add(ChatBlocLoadMore(
+        fromMessageId: messages.last.id,
+        older: true,
+      ));
+    } else {
+      l.d(tag, "No more older messages, adding NoMoreMessages container");
+      _containers.add(const ChatBlocNoMoreMessages(older: true));
+    }
+
+    // Ajouter les messages du plus ancien au plus récent
+    for (final message in messages.reversed) {
+      l.d(tag, "Processing message ${message.id}");
+      _messagesData[message.id] = message;
+      _containers.add(ChatBlocMessageId(message.id));
+    }
+
+    // Ajouter le LoadMore pour les messages plus récents si nécessaire
+    if (messages.first.id != _chat.lastMessage?.id) {
+      l.d(tag, "Adding LoadMore container for newer messages");
+      _containers.add(ChatBlocLoadMore(
+        fromMessageId: messages.first.id,
+        older: false,
+      ));
+    } else {
+      l.d(tag, "No more newer messages, adding NoMoreMessages container");
+      _containers.add(const ChatBlocNoMoreMessages(older: false));
+    }
+
+    _notifyContainersChanged();
+  }
+
+  void _notifyContainersChanged([MessageListChange? change]) {
+    l.d(tag, "Notifying containers changed");
+    l.d(tag, "Current containers: ${_containers.map((c) => c.runtimeType).join(', ')}");
+    if (!_streamController.isClosed) {
+      _streamController.add(ChatBlocMessagesListData(
+        _containers,
+        whatsChanged: change,
+      ));
+    }
+  }
 
   Future<void> _setUiReady(
     ChatBlocReadyToShowEvent event,
@@ -316,6 +327,7 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
     Emitter<ChatBlocState> emit,
   ) async =>
       _lock.protect(() async {
+        debugPrint('ChatBloc: Loading chunk from message ${event.middleMessageId}');
         // Load chunk
         final messages = await CurrentAccount.providers.messages.getHistory(
           _chat.id,
@@ -323,6 +335,7 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
           offset: (_kChunkSize - 1) ~/ -2,
           limit: _kChunkSize,
         );
+        debugPrint('ChatBloc: Loaded ${messages.length} messages');
 
         for (final message in messages) {
           final status = _containerInsert(ChatBlocMessageId(message.id));
@@ -346,10 +359,13 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
           }
         }
 
+        final indexAfter = _containers.indexWhere((c) => c is ChatBlocMessageId && (c as ChatBlocMessageId).id == event.middleMessageId);
         _streamController.add(ChatBlocMessagesListData(
-          _containers,
-          focusData: ChatBlocFocusData(
-            focusOnMessageId: event.middleMessageId,
+          List<ChatBlocContainer>.from(_containers),
+          whatsChanged: MessageListChange(
+            refIndexBefore: 0,
+            refIndexAfter: indexAfter,
+            delta: messages.length,
           ),
         ));
       });
@@ -358,79 +374,78 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
   Future<void> _loadMore(
     ChatBlocLoadMoreEvent event,
     Emitter<ChatBlocState> emit,
-  ) =>
-      _lock.protect(() async {
+  ) async {
+    l.d(tag, "Loading more messages from ${event.data.fromMessageId}, older: ${event.data.older}");
+    
+    await _exceptionsGuard(
+      emit,
+      () async {
         final messages = await CurrentAccount.providers.messages.getHistory(
           _chat.id,
           fromMessageId: event.data.fromMessageId,
           limit: _kLoadMoreCount,
           offset: event.data.older ? 0 : -(_kLoadMoreCount - 1),
         );
+        l.d(tag, "Received ${messages.length} more messages");
 
-        bool conflict = false;
-        int delta = messages.length;
-
-        final indexBefore =
-            _containers.indexOf(event.data) - (event.data.older ? 1 : -1);
-        _containers.remove(event.data);
-        int indexAfter = indexBefore;
-        if (!event.data.older) {
-          indexAfter += messages.length;
+        if (messages.isEmpty) {
+          l.d(tag, "No more messages found");
+          return;
         }
 
-        // Insert messages
-        for (final msg in messages) {
-          final status = _containerInsert(ChatBlocMessageId(msg.id));
-          _messagesData[msg.id] = msg;
-
-          if (status == _ContainerInsertStatus.alreadyExists) {
-            _streamController.add(ChatBlocMessageContentUpdated(msg));
-            if (event.data.older) {
-              conflict = msg.id == messages.last.id;
-            } else {
-              conflict = msg.id == messages.first.id;
-            }
-            if (!event.data.older) {
-              indexAfter--;
-              delta--;
-            }
-          }
+        final containerIndex = _containers.indexOf(event.data);
+        if (containerIndex == -1) {
+          l.d(tag, "LoadMore container not found in list");
+          return;
         }
 
-        // Update LoadMore / NoMoreMessages
-        if (!conflict) {
-          if (messages.length != _kLoadMoreCount) {
-            _containerInsert(ChatBlocNoMoreMessages(older: event.data.older));
-          } else {
-            _containerInsert(ChatBlocLoadMore(
-              fromMessageId:
-                  (event.data.older ? messages.last : messages.first).id,
+        // Remove the LoadMore container
+        _containers.removeAt(containerIndex);
+
+        // Add new messages
+        final messagesToAdd = event.data.older ? messages.reversed : messages;
+        for (final message in messagesToAdd) {
+          l.d(tag, "Adding message ${message.id}");
+          _messagesData[message.id] = message;
+          _containers.insert(
+            containerIndex,
+            ChatBlocMessageId(message.id),
+          );
+        }
+
+        // Add new LoadMore container if needed
+        if (messages.length >= _kLoadMoreCount) {
+          l.d(tag, "Adding new LoadMore container");
+          _containers.insert(
+            containerIndex,
+            ChatBlocLoadMore(
+              fromMessageId: event.data.older ? messages.last.id : messages.first.id,
               older: event.data.older,
-            ));
-          }
-          indexAfter++;
-          delta++;
+            ),
+          );
+        } else {
+          l.d(tag, "No more messages to load in this direction");
+          _containers.insert(
+            containerIndex,
+            ChatBlocNoMoreMessages(older: event.data.older),
+          );
         }
 
-        event.setCooldownExpirationDate?.call(DateTime.now().add(
-          const Duration(seconds: 3),
+        _notifyContainersChanged(MessageListChange(
+          refIndexBefore: containerIndex,
+          refIndexAfter: containerIndex,
+          delta: messages.length,
         ));
-        _streamController.add(ChatBlocMessagesListData(
-          _containers,
-          whatsChanged: MessageListChange(
-            refIndexAfter: indexAfter,
-            refIndexBefore: indexBefore,
-            delta: delta,
-            preservationUnneeded: event.data.older,
-          ),
-        ));
-      });
+        return;
+      },
+    );
+  }
 
   static const int _kLoadLatestCount = 10;
   Future<void> _loadLatest(
     ChatBlocLoadLatestMessagesEvent event,
     Emitter<ChatBlocState> emit,
-  ) =>
+  ) async =>
       _lock.protect(() async {
         if (_containers.first is ChatBlocNoMoreMessages) {
           _streamController.add(ChatBlocMessagesListData(
@@ -560,7 +575,7 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
           for (int i = 0; i < 10; i++) {
             _messagesData.remove(switch (_containers[i]) {
               ChatBlocMessageId(id: final id) => id,
-              _ => -1,
+              _ => null,
             });
             _containers.removeAt(i);
           }
@@ -599,7 +614,7 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
           for (int i = _containers.length - 10; i < _containers.length; i++) {
             _messagesData.remove(switch (_containers[i]) {
               ChatBlocMessageId(id: final id) => id,
-              _ => -1,
+              _ => null,
             });
             _containers.removeAt(i);
           }
@@ -637,7 +652,6 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
           whatsChanged: MessageListChange(
             refIndexBefore: indexBefore,
             refIndexAfter: indexAfter,
-            preservationUnneeded: distance.last > 15,
             delta: delta,
           ),
         ));
@@ -656,7 +670,7 @@ class ChatBloc extends Bloc<ChatBlocEvent, ChatBlocState> {
         } else {
           _streamController.add(ChatBlocMessagesListData(
             _containers,
-            whatsChanged: const MessageListChange(
+            whatsChanged: MessageListChange(
               refIndexBefore: 0,
               refIndexAfter: 1,
               delta: 1,

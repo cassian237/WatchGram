@@ -31,7 +31,7 @@ class ChatPage extends StatelessWidget {
           chatId: id,
           focusOnMessageId: focusOnMessageId,
         )),
-      child: MessageFocusData(child: const ChatView()),
+      child: MessageFocusData(child: ChatView(chatId: id)),
     );
   }
 }
